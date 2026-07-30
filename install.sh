@@ -5,18 +5,7 @@ REPO="tedex228/Terminal-Render"
 BIN_NAME="terminal-render"
 INSTALL_DIR="/usr/local/bin"
 
-ARCH=$(uname -m)
-case "$ARCH" in
-    x86_64)  ARCH="amd64" ;;
-    aarch64) ARCH="arm64" ;;
-    *)
-        echo "Unsupported architecture: $ARCH"
-        echo "Please build from source: https://github.com/$REPO#building"
-        exit 1
-        ;;
-esac
-
-URL="https://github.com/$REPO/releases/latest/download/$BIN_NAME-linux-$ARCH"
+URL="https://github.com/$REPO/releases/latest/download/$BIN_NAME"
 
 echo "Downloading $BIN_NAME for linux-$ARCH..."
 if command -v curl &>/dev/null; then
