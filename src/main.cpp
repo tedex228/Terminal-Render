@@ -17,6 +17,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <memory>
+#include <sys/ioctl.h>
 
 static volatile bool running = true;
 
@@ -67,7 +68,7 @@ int main(int argc, char** argv) {
             cfg.fullscreen = true;
         else if (strcmp(argv[i], "-h") == 0) {
             printf("Usage: terminal-render [options]\n");
-            printf("  -r WxH    Target resolution (default: 640x480)\n");
+            printf("  -r WxH    Target resolution (default: auto = terminal cols x rows*2)\n");
             printf("  -f        Fullscreen capture\n");
             printf("  -h        Show this help\n");
             return 0;
@@ -85,12 +86,25 @@ int main(int argc, char** argv) {
 
     if (!capturer->selectWindow()) return 1;
 
+    // Auto-detect target resolution to fit terminal
+    if (cfg.target_width <= 0 || cfg.target_height <= 0) {
+        struct winsize ws;
+        if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0 && ws.ws_row > 0) {
+            cfg.target_width = ws.ws_col;
+            cfg.target_height = ws.ws_row * 2;
+        } else {
+            cfg.target_width = 80;
+            cfg.target_height = 48;
+        }
+    }
+
     fprintf(stderr, "Source: %dx%d\n", capturer->sourceWidth(), capturer->sourceHeight());
     fprintf(stderr, "Target: %dx%d\n", cfg.target_width, cfg.target_height);
     fprintf(stderr, "Press Q or Ctrl+C to quit\n");
 
     TermRenderer renderer;
     if (!renderer.init()) return 1;
+    renderer.clearScreen();
 
     using clock = std::chrono::steady_clock;
     auto last_time = clock::now();

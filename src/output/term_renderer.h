@@ -13,6 +13,9 @@ public:
     void render(const std::string& frame, int term_w, int term_h);
     void showFps(int fps);
     void moveTo(int x, int y);
+    void clearScreen();
+    int getTerminalWidth();
+    int getTerminalHeight();
 
 private:
     struct termios orig_term;
@@ -24,7 +27,4 @@ private:
 
     void enableRawMode();
     void disableRawMode();
-    void clearScreen();
-    int getTerminalWidth();
-    int getTerminalHeight();
 };
