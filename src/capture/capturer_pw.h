@@ -21,26 +21,33 @@ public:
 
 private:
     sd_bus* bus = nullptr;
-    pw_main_loop* loop = nullptr;
-    pw_context* context = nullptr;
-    pw_core* core = nullptr;
-    pw_stream* stream = nullptr;
-    spa_hook stream_listener;
-    std::thread* worker = nullptr;
+    std::string session_handle;
 
-    int src_w = 640;
-    int src_h = 480;
+    pw_main_loop* loop = nullptr;
+    pw_context* pw_ctx = nullptr;
+    pw_core* pw_core_ = nullptr;
+    pw_stream* pws = nullptr;
+    spa_hook stream_listener;
+    std::thread pw_thread;
+    bool streaming = false;
+
+    int src_w = 640, src_h = 480;
     std::mutex mtx;
     Frame latest;
-    std::string session_handle;
-    bool pw_inited = false;
 
-    bool dbusCallCreateSession();
-    bool dbusCallSelectSources();
-    bool dbusCallStart(uint32_t& node_id);
-    bool pwStream(uint32_t node_id);
+    bool dbusCreate();
+    bool dbusSelect();
+    bool dbusStart();
 
-    static void onProcess(void* data);
+    struct Resp { bool done = false; uint32_t result = 0; std::string sh; int fd = -1; };
+    static int onResp(sd_bus_message* m, void* u, sd_bus_error* e);
+    bool waitResp(const char* match, Resp& out, int t = 15);
+
+    bool pwConnect(int fd);
+    static void onProc(void* data);
+    void onFrame(struct spa_buffer* b);
+
+    Frame screenshotFallback();
 };
 
 bool detectWayland();

@@ -31,7 +31,7 @@ endif()
 if(PW_FOUND)
     target_sources(terminal-render PRIVATE src/capture/capturer_pw.cpp)
     target_include_directories(terminal-render PRIVATE ${PW_INCLUDE_DIRS})
-    target_link_libraries(terminal-render PRIVATE ${PW_LIBRARIES} systemd)
+    target_link_libraries(terminal-render PRIVATE ${PW_LIBRARIES} systemd gbm drm)
     target_compile_definitions(terminal-render PRIVATE HAS_PW)
 endif()
 
