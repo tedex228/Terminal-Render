@@ -15,69 +15,28 @@ bool X11Capturer::init() {
     return true;
 }
 
-bool X11Capturer::selectWindow() {
-    if (!display) return false;
-
-    Window root = RootWindow(display, screen);
-    Cursor cursor = XCreateFontCursor(display, XC_crosshair);
-
-    // Grab pointer in Async mode — events are delivered normally
-    int ret = XGrabPointer(display, root, False,
-                           ButtonPressMask,
-                           GrabModeAsync, GrabModeAsync,
-                           root, cursor, CurrentTime);
-    if (ret != GrabSuccess) {
-        fprintf(stderr, "error: XGrabPointer failed (%d)\n", ret);
-        XFreeCursor(display, cursor);
-        return false;
-    }
-
-    fprintf(stderr, "Click on a window to capture...\n");
-    fflush(stderr);
-
-    XEvent event;
-    XNextEvent(display, &event);
-
-    XUngrabPointer(display, CurrentTime);
-    XFreeCursor(display, cursor);
-
-    // event.xbutton.subwindow is the child under pointer
-    target_window = event.xbutton.subwindow;
-    if (!target_window)
-        target_window = event.xbutton.window;
-
-    // Walk up to find the top-level window (window with WM_STATE)
-    Window root_ret, parent;
-    Window* children = nullptr;
-    unsigned int nchildren;
+static Window getTopLevelWindow(Display* dpy, Window w) {
+    Window root_ret = RootWindow(dpy, DefaultScreen(dpy));
+    Window result = w;
     while (true) {
-        if (!XQueryTree(display, target_window, &root_ret, &parent,
-                        &children, &nchildren))
+        Window root, parent;
+        Window* children = nullptr;
+        unsigned int nchildren;
+        if (!XQueryTree(dpy, result, &root, &parent, &children, &nchildren))
             break;
         if (children) XFree(children);
-        if (!parent || parent == root)
+        if (!parent || parent == root_ret)
             break;
-        target_window = parent;
+        result = parent;
     }
+    return result;
+}
 
-    fprintf(stderr, "Selected window: 0x%lx\n", target_window);
-
-    // Get window dimensions
-    XWindowAttributes attr;
-    XGetWindowAttributes(display, target_window, &attr);
-    src_w = attr.width;
-    src_h = attr.height;
-
-    if (src_w <= 0 || src_h <= 0) {
-        fprintf(stderr, "error: invalid window size %dx%d\n", src_w, src_h);
-        return false;
-    }
-
-    // Allocate shared memory image
+bool X11Capturer::setupShmImage() {
     if (image) {
         XShmDetach(display, &shm_info);
         shmdt(shm_info.shmaddr);
-        XFree(image);
+        XDestroyImage(image);
         image = nullptr;
     }
 
@@ -93,6 +52,8 @@ bool X11Capturer::selectWindow() {
                             IPC_CREAT | 0777);
     if (shm_info.shmid < 0) {
         fprintf(stderr, "error: shmget failed\n");
+        XDestroyImage(image);
+        image = nullptr;
         return false;
     }
 
@@ -103,11 +64,76 @@ bool X11Capturer::selectWindow() {
     if (!XShmAttach(display, &shm_info)) {
         fprintf(stderr, "error: XShmAttach failed\n");
         shmdt(shm_info.shmaddr);
+        XDestroyImage(image);
+        image = nullptr;
         return false;
     }
 
     XSync(display, False);
     shmctl(shm_info.shmid, IPC_RMID, nullptr);
+    return true;
+}
+
+bool X11Capturer::selectWindow() {
+    if (!display) return false;
+
+    Window root = RootWindow(display, screen);
+
+    // Method 1: Try XGrabPointer (click to select)
+    Cursor cursor = XCreateFontCursor(display, XC_crosshair);
+
+    int ret = XGrabPointer(display, root, False,
+                           ButtonPressMask,
+                           GrabModeAsync, GrabModeAsync,
+                           root, cursor, CurrentTime);
+
+    if (ret == GrabSuccess) {
+        fprintf(stderr, "Click on a window to capture...\n");
+        fflush(stderr);
+
+        XEvent event;
+        XNextEvent(display, &event);
+
+        XUngrabPointer(display, CurrentTime);
+        XFreeCursor(display, cursor);
+
+        Window clicked = event.xbutton.subwindow;
+        if (!clicked) clicked = event.xbutton.window;
+        target_window = getTopLevelWindow(display, clicked);
+    } else {
+        XFreeCursor(display, cursor);
+
+        // Method 2: Fallback — capture the currently focused window
+        fprintf(stderr, "XGrabPointer failed (%d), capturing focused window...\n", ret);
+        fflush(stderr);
+
+        Window focus;
+        int revert;
+        XGetInputFocus(display, &focus, &revert);
+
+        if (!focus || focus == root || focus == PointerRoot) {
+            fprintf(stderr, "error: no focused window\n");
+            return false;
+        }
+
+        target_window = getTopLevelWindow(display, focus);
+    }
+
+    // Get dimensions
+    XWindowAttributes attr;
+    XGetWindowAttributes(display, target_window, &attr);
+    src_w = attr.width;
+    src_h = attr.height;
+
+    if (src_w <= 0 || src_h <= 0) {
+        fprintf(stderr, "error: invalid window size %dx%d\n", src_w, src_h);
+        return false;
+    }
+
+    fprintf(stderr, "Selected window: 0x%lx (%dx%d)\n", target_window, src_w, src_h);
+
+    // Allocate shared memory
+    if (!setupShmImage()) return false;
 
     return true;
 }
@@ -136,7 +162,7 @@ X11Capturer::~X11Capturer() {
         if (image) {
             XShmDetach(display, &shm_info);
             shmdt(shm_info.shmaddr);
-            XFree(image);
+            XDestroyImage(image);
         }
         XCloseDisplay(display);
     }

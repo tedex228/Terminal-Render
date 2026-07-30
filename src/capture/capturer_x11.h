@@ -17,6 +17,7 @@ public:
     int sourceHeight() const override { return src_h; }
 
 private:
+    bool setupShmImage();
     Display* display = nullptr;
     Window target_window = 0;
     XShmSegmentInfo shm_info;
