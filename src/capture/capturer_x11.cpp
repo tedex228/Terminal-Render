@@ -18,33 +18,47 @@ bool X11Capturer::init() {
 bool X11Capturer::selectWindow() {
     if (!display) return false;
 
-    // Grab pointer and wait for click
-    Cursor cursor = XCreateFontCursor(display, XC_crosshair);
     Window root = RootWindow(display, screen);
+    Cursor cursor = XCreateFontCursor(display, XC_crosshair);
 
-    XGrabPointer(display, root, False,
-                 ButtonPressMask | ButtonReleaseMask,
-                 GrabModeSync, GrabModeAsync,
-                 root, cursor, CurrentTime);
+    // Grab pointer in Async mode — events are delivered normally
+    int ret = XGrabPointer(display, root, False,
+                           ButtonPressMask,
+                           GrabModeAsync, GrabModeAsync,
+                           root, cursor, CurrentTime);
+    if (ret != GrabSuccess) {
+        fprintf(stderr, "error: XGrabPointer failed (%d)\n", ret);
+        XFreeCursor(display, cursor);
+        return false;
+    }
 
     fprintf(stderr, "Click on a window to capture...\n");
+    fflush(stderr);
 
     XEvent event;
-    XAllowEvents(display, SyncPointer, CurrentTime);
-    XWindowEvent(display, root, ButtonPressMask, &event);
+    XNextEvent(display, &event);
 
     XUngrabPointer(display, CurrentTime);
     XFreeCursor(display, cursor);
 
-    Window child;
-    int win_x, win_y, root_x, root_y;
-    unsigned int mask;
-    XQueryPointer(display, event.xbutton.root, &root, &child,
-                  &root_x, &root_y, &win_x, &win_y, &mask);
-
-    target_window = child;
+    // event.xbutton.subwindow is the child under pointer
+    target_window = event.xbutton.subwindow;
     if (!target_window)
-        target_window = root;
+        target_window = event.xbutton.window;
+
+    // Walk up to find the top-level window (window with WM_STATE)
+    Window root_ret, parent;
+    Window* children = nullptr;
+    unsigned int nchildren;
+    while (true) {
+        if (!XQueryTree(display, target_window, &root_ret, &parent,
+                        &children, &nchildren))
+            break;
+        if (children) XFree(children);
+        if (!parent || parent == root)
+            break;
+        target_window = parent;
+    }
 
     fprintf(stderr, "Selected window: 0x%lx\n", target_window);
 
@@ -54,16 +68,22 @@ bool X11Capturer::selectWindow() {
     src_w = attr.width;
     src_h = attr.height;
 
+    if (src_w <= 0 || src_h <= 0) {
+        fprintf(stderr, "error: invalid window size %dx%d\n", src_w, src_h);
+        return false;
+    }
+
     // Allocate shared memory image
     if (image) {
         XShmDetach(display, &shm_info);
         shmdt(shm_info.shmaddr);
+        XFree(image);
+        image = nullptr;
     }
 
     image = XShmCreateImage(display, DefaultVisual(display, screen),
                             DefaultDepth(display, screen), ZPixmap,
                             nullptr, &shm_info, src_w, src_h);
-
     if (!image) {
         fprintf(stderr, "error: XShmCreateImage failed\n");
         return false;
@@ -82,6 +102,7 @@ bool X11Capturer::selectWindow() {
 
     if (!XShmAttach(display, &shm_info)) {
         fprintf(stderr, "error: XShmAttach failed\n");
+        shmdt(shm_info.shmaddr);
         return false;
     }
 

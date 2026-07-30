@@ -8,6 +8,8 @@
 #include <chrono>
 #include <thread>
 #include <signal.h>
+#include <unistd.h>
+#include <fcntl.h>
 
 static volatile bool running = true;
 
@@ -15,10 +17,23 @@ void handleSignal(int) {
     running = false;
 }
 
+static bool isQuitKeyPressed() {
+    static bool init = false;
+    if (!init) {
+        int flags = fcntl(STDIN_FILENO, F_GETFL, 0);
+        fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK);
+        init = true;
+    }
+    char c;
+    if (read(STDIN_FILENO, &c, 1) == 1) {
+        return (c == 'q' || c == 'Q' || c == 0x03);
+    }
+    return false;
+}
+
 int main(int argc, char** argv) {
     Config cfg;
 
-    // Parse args
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "-r") == 0 && i + 1 < argc) {
             sscanf(argv[++i], "%dx%d", &cfg.target_width, &cfg.target_height);
@@ -43,9 +58,8 @@ int main(int argc, char** argv) {
 
     fprintf(stderr, "Window size: %dx%d\n", capturer.sourceWidth(), capturer.sourceHeight());
     fprintf(stderr, "Target resolution: %dx%d\n", cfg.target_width, cfg.target_height);
-    fprintf(stderr, "Press Ctrl+C to quit\n");
+    fprintf(stderr, "Press Q or Ctrl+C to quit\n");
 
-    // Terminal setup
     TermRenderer renderer;
     if (!renderer.init()) return 1;
 
@@ -53,12 +67,21 @@ int main(int argc, char** argv) {
     auto last_time = clock::now();
     int frame_count = 0;
     int display_fps = 0;
+    int frame_err = 0;
 
     while (running) {
+        if (isQuitKeyPressed()) break;
+
         auto frame_start = clock::now();
 
         Frame src = capturer.capture();
-        if (src.width == 0 || src.height == 0) break;
+        if (src.width == 0 || src.height == 0) {
+            ++frame_err;
+            if (frame_err > 30) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            continue;
+        }
+        frame_err = 0;
 
         Frame down = downscaleBox(src, cfg.target_width, cfg.target_height);
         if (down.width == 0 || down.height == 0) break;
@@ -68,7 +91,6 @@ int main(int argc, char** argv) {
 
         renderer.render(ansi, term_w, term_h);
 
-        // FPS counter (update every second)
         ++frame_count;
         auto now = clock::now();
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_time).count();
@@ -77,13 +99,6 @@ int main(int argc, char** argv) {
             renderer.showFps(display_fps);
             frame_count = 0;
             last_time = now;
-        }
-
-        // Optional: minimal sleep to avoid busy-wait
-        auto frame_end = clock::now();
-        auto frame_ms = std::chrono::duration_cast<std::chrono::milliseconds>(frame_end - frame_start).count();
-        if (frame_ms < 1) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
     }
 

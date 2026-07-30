@@ -7,7 +7,7 @@ INSTALL_DIR="/usr/local/bin"
 
 URL="https://github.com/$REPO/releases/latest/download/$BIN_NAME"
 
-echo "Downloading $BIN_NAME for linux-$ARCH..."
+echo "Downloading $BIN_NAME..."
 if command -v curl &>/dev/null; then
     curl -#L "$URL" -o /tmp/$BIN_NAME
 elif command -v wget &>/dev/null; then
