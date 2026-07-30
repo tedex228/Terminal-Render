@@ -1,4 +1,10 @@
+#include "capture/capturer.h"
+#ifdef HAS_X11
 #include "capture/capturer_x11.h"
+#endif
+#ifdef HAS_PW
+#include "capture/capturer_pw.h"
+#endif
 #include "processor/downscaler.h"
 #include "processor/ascii_conv.h"
 #include "output/term_renderer.h"
@@ -10,6 +16,7 @@
 #include <signal.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <memory>
 
 static volatile bool running = true;
 
@@ -25,21 +32,40 @@ static bool isQuitKeyPressed() {
         init = true;
     }
     char c;
-    if (read(STDIN_FILENO, &c, 1) == 1) {
+    if (read(STDIN_FILENO, &c, 1) == 1)
         return (c == 'q' || c == 'Q' || c == 0x03);
-    }
     return false;
+}
+
+static std::unique_ptr<Capturer> createCapturer() {
+#ifdef HAS_PW
+    bool wayland = getenv("WAYLAND_DISPLAY") != nullptr;
+    if (wayland) {
+        fprintf(stderr, "Detected Wayland, using PipeWire capture...\n");
+        auto cap = std::make_unique<PipewireCapturer>();
+        if (cap->init()) return cap;
+        fprintf(stderr, "PipeWire failed, falling back...\n");
+    }
+#endif
+
+#ifdef HAS_X11
+    fprintf(stderr, "Using X11 capture...\n");
+    auto cap = std::make_unique<X11Capturer>();
+    if (cap->init()) return cap;
+#endif
+
+    return nullptr;
 }
 
 int main(int argc, char** argv) {
     Config cfg;
 
     for (int i = 1; i < argc; ++i) {
-        if (strcmp(argv[i], "-r") == 0 && i + 1 < argc) {
+        if (strcmp(argv[i], "-r") == 0 && i + 1 < argc)
             sscanf(argv[++i], "%dx%d", &cfg.target_width, &cfg.target_height);
-        } else if (strcmp(argv[i], "-f") == 0) {
+        else if (strcmp(argv[i], "-f") == 0)
             cfg.fullscreen = true;
-        } else if (strcmp(argv[i], "-h") == 0) {
+        else if (strcmp(argv[i], "-h") == 0) {
             printf("Usage: terminal-render [options]\n");
             printf("  -r WxH    Target resolution (default: 640x480)\n");
             printf("  -f        Fullscreen capture\n");
@@ -51,13 +77,16 @@ int main(int argc, char** argv) {
     signal(SIGINT, handleSignal);
     signal(SIGTERM, handleSignal);
 
-    X11Capturer capturer;
-    if (!capturer.init()) return 1;
+    auto capturer = createCapturer();
+    if (!capturer) {
+        fprintf(stderr, "No capture backend available\n");
+        return 1;
+    }
 
-    if (!capturer.selectWindow()) return 1;
+    if (!capturer->selectWindow()) return 1;
 
-    fprintf(stderr, "Window size: %dx%d\n", capturer.sourceWidth(), capturer.sourceHeight());
-    fprintf(stderr, "Target resolution: %dx%d\n", cfg.target_width, cfg.target_height);
+    fprintf(stderr, "Source: %dx%d\n", capturer->sourceWidth(), capturer->sourceHeight());
+    fprintf(stderr, "Target: %dx%d\n", cfg.target_width, cfg.target_height);
     fprintf(stderr, "Press Q or Ctrl+C to quit\n");
 
     TermRenderer renderer;
@@ -74,7 +103,7 @@ int main(int argc, char** argv) {
 
         auto frame_start = clock::now();
 
-        Frame src = capturer.capture();
+        Frame src = capturer->capture();
         if (src.width == 0 || src.height == 0) {
             ++frame_err;
             if (frame_err > 30) break;

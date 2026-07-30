@@ -8,3 +8,4 @@ build/
 *.swo
 *~
 cmake-build-*/
+PROJECT_STATUS.md

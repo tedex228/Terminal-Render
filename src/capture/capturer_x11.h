@@ -25,4 +25,5 @@ private:
     int src_w = 0;
     int src_h = 0;
     int screen = 0;
+    Window root = 0;
 };

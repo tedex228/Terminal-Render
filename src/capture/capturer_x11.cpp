@@ -1,6 +1,7 @@
 #include "capture/capturer_x11.h"
 #include <X11/cursorfont.h>
 #include <X11/Xutil.h>
+#include <X11/Xatom.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -12,23 +13,115 @@ bool X11Capturer::init() {
         return false;
     }
     screen = DefaultScreen(display);
+    root = RootWindow(display, screen);
     return true;
 }
 
 static Window getTopLevelWindow(Display* dpy, Window w) {
-    Window root_ret = RootWindow(dpy, DefaultScreen(dpy));
+    Window root_w = RootWindow(dpy, DefaultScreen(dpy));
     Window result = w;
-    while (true) {
-        Window root, parent;
+    while (True) {
+        Window r, parent;
         Window* children = nullptr;
         unsigned int nchildren;
-        if (!XQueryTree(dpy, result, &root, &parent, &children, &nchildren))
+        if (!XQueryTree(dpy, result, &r, &parent, &children, &nchildren))
             break;
         if (children) XFree(children);
-        if (!parent || parent == root_ret)
+        if (!parent || parent == root_w)
             break;
         result = parent;
     }
+    return result;
+}
+
+static bool checkWmState(Display* dpy, Window w) {
+    Atom wm_state = XInternAtom(dpy, "WM_STATE", True);
+    if (wm_state == None) return false;
+
+    Atom actual_type;
+    int actual_format;
+    unsigned long nitems, bytes_after;
+    unsigned char* data = nullptr;
+    int status = XGetWindowProperty(dpy, w, wm_state, 0, 0, False,
+                                    AnyPropertyType, &actual_type,
+                                    &actual_format, &nitems, &bytes_after, &data);
+    if (data) XFree(data);
+    return (status == Success && actual_type != None);
+}
+
+static Window findClientWindow(Display* dpy, Window top) {
+    // Check if this window itself has WM_STATE
+    if (checkWmState(dpy, top)) return top;
+
+    // Recursively search children
+    Window root_ret, parent;
+    Window* children = nullptr;
+    unsigned int nchildren;
+    if (!XQueryTree(dpy, top, &root_ret, &parent, &children, &nchildren))
+        return None;
+
+    Window result = None;
+    for (unsigned i = 0; i < nchildren; ++i) {
+        result = findClientWindow(dpy, children[i]);
+        if (result) break;
+    }
+
+    if (children) XFree(children);
+    return result;
+}
+
+static Window findAnyWindow(Display* dpy) {
+    Window root = RootWindow(dpy, DefaultScreen(dpy));
+
+    // Method A: _NET_CLIENT_LIST
+    Atom client_list = XInternAtom(dpy, "_NET_CLIENT_LIST", True);
+    if (client_list != None) {
+        Atom actual_type;
+        int actual_format;
+        unsigned long nitems, bytes_after;
+        unsigned char* data = nullptr;
+
+        if (XGetWindowProperty(dpy, root, client_list, 0, ~0L, False,
+                               XA_WINDOW, &actual_type, &actual_format,
+                               &nitems, &bytes_after, &data) == Success
+            && actual_type == XA_WINDOW && nitems > 0) {
+            Window* windows = (Window*)data;
+            for (unsigned long i = 0; i < nitems; ++i) {
+                XWindowAttributes attr;
+                if (XGetWindowAttributes(dpy, windows[i], &attr)
+                    && attr.map_state == IsViewable
+                    && attr.width > 100 && attr.height > 100) {
+                    Window result = windows[i];
+                    XFree(data);
+                    return result;
+                }
+            }
+            XFree(data);
+        }
+    }
+
+    // Method B: recursively search all root children for WM_STATE
+    Window root_ret, parent;
+    Window* children = nullptr;
+    unsigned int nchildren;
+    if (!XQueryTree(dpy, root, &root_ret, &parent, &children, &nchildren))
+        return None;
+
+    Window result = None;
+    for (unsigned i = 0; i < nchildren; ++i) {
+        Window client = findClientWindow(dpy, children[i]);
+        if (client) {
+            XWindowAttributes attr;
+            if (XGetWindowAttributes(dpy, client, &attr)
+                && attr.map_state == IsViewable
+                && attr.width > 100 && attr.height > 100) {
+                result = client;
+                break;
+            }
+        }
+    }
+
+    if (children) XFree(children);
     return result;
 }
 
@@ -77,8 +170,6 @@ bool X11Capturer::setupShmImage() {
 bool X11Capturer::selectWindow() {
     if (!display) return false;
 
-    Window root = RootWindow(display, screen);
-
     // Method 1: Try XGrabPointer (click to select)
     Cursor cursor = XCreateFontCursor(display, XC_crosshair);
 
@@ -89,7 +180,6 @@ bool X11Capturer::selectWindow() {
 
     if (ret == GrabSuccess) {
         fprintf(stderr, "Click on a window to capture...\n");
-        fflush(stderr);
 
         XEvent event;
         XNextEvent(display, &event);
@@ -103,20 +193,15 @@ bool X11Capturer::selectWindow() {
     } else {
         XFreeCursor(display, cursor);
 
-        // Method 2: Fallback — capture the currently focused window
-        fprintf(stderr, "XGrabPointer failed (%d), capturing focused window...\n", ret);
-        fflush(stderr);
+        // Method 2: Auto-detect a suitable window
+        fprintf(stderr, "XGrabPointer failed (%d), scanning for windows...\n", ret);
 
-        Window focus;
-        int revert;
-        XGetInputFocus(display, &focus, &revert);
+        target_window = findAnyWindow(display);
 
-        if (!focus || focus == root || focus == PointerRoot) {
-            fprintf(stderr, "error: no focused window\n");
+        if (!target_window) {
+            fprintf(stderr, "error: no suitable window found\n");
             return false;
         }
-
-        target_window = getTopLevelWindow(display, focus);
     }
 
     // Get dimensions
@@ -125,14 +210,14 @@ bool X11Capturer::selectWindow() {
     src_w = attr.width;
     src_h = attr.height;
 
-    if (src_w <= 0 || src_h <= 0) {
-        fprintf(stderr, "error: invalid window size %dx%d\n", src_w, src_h);
+    if (src_w <= 1 || src_h <= 1) {
+        fprintf(stderr, "error: bad window size %dx%d for 0x%lx\n",
+                src_w, src_h, target_window);
         return false;
     }
 
     fprintf(stderr, "Selected window: 0x%lx (%dx%d)\n", target_window, src_w, src_h);
 
-    // Allocate shared memory
     if (!setupShmImage()) return false;
 
     return true;
